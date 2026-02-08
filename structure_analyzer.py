@@ -86,10 +86,13 @@ class StructureAnalyzer:
         """
         Generate SVG structure diagram using ViennaRNA RNAplot command
         
+        Uses stdin approach for better compatibility with Streamlit/Docker environments
+        
         Args:
             sequence: Nucleotide sequence
             structure: Dot-bracket structure
-            filename: Optional filename to save SVG (if None, returns SVG string)
+            filename: Optional filename to save SVG
+            layout: Layout type (1=default)
             
         Returns:
             SVG content as string
@@ -98,54 +101,98 @@ class StructureAnalyzer:
         import tempfile
         import os
         import shutil
+        import time
 
         if not shutil.which("RNAplot"):
             return self._generate_fallback_svg(sequence, structure)
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            fasta_path = os.path.join(tmpdir, "input.fa")
-
-            with open(fasta_path, "w") as f:
-                f.write(self._build_vienna_fasta("structure", sequence, structure))
-
-            result = subprocess.run(
-                ["RNAplot", "-f", "svg", "--layout-type", str(layout), "-i", fasta_path],
-                cwd=tmpdir,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
+            # Method 1: Try using stdin (most reliable in containers)
+            try:
+                # Prepare input data
+                input_data = f"{sequence}\n{structure}\n"
+                
+                # Run RNAplot with stdin, output to tmpdir
+                result = subprocess.run(
+                    ["RNAplot", "--output-format=svg", f"--layout-type={layout}"],
+                    input=input_data,
+                    cwd=tmpdir,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                
+                # Small delay to ensure file is written
+                time.sleep(0.2)
+                
+                print("=== RNAplot STDIN Method ===")
+                print("Return code:", result.returncode)
+                print("Files created:", os.listdir(tmpdir))
+                
+                # Look for SVG file
+                svg_files = [f for f in os.listdir(tmpdir) if f.endswith('.svg')]
+                
+                if svg_files:
+                    svg_path = os.path.join(tmpdir, svg_files[0])
+                    with open(svg_path) as f:
+                        svg = f.read()
+                    
+                    if filename:
+                        with open(filename, "w") as out:
+                            out.write(svg)
+                    
+                    print("✓ SVG generated successfully via stdin")
+                    return svg
+                
+            except Exception as e:
+                print(f"STDIN method failed: {e}")
             
-            print("=== RNAplot DEBUG ===")
-            print("Command:", result.args)
-            print("Return code:", result.returncode)
-            print("STDOUT:", result.stdout)
-            print("STDERR:", result.stderr)
-            print("Files in tmpdir:", os.listdir(tmpdir))
-            print("======================")
-
-
-            # Find the first SVG file produced by RNAplot
-            svg_path = next(
-                (os.path.join(tmpdir, f) for f in os.listdir(tmpdir) if f.lower().endswith(".svg")),
-                None
-            )
-
-            if svg_path is None:
-                print("RNAplot failed")
-                print("stderr:", result.stderr)
-                print("files:", os.listdir(tmpdir))
-                return self._generate_fallback_svg(sequence, structure)
-
+            # Method 2: Try with file input (fallback)
+            try:
+                input_file = os.path.join(tmpdir, "input.txt")
+                with open(input_file, "w") as f:
+                    f.write(f"{sequence}\n{structure}\n")
+                
+                result = subprocess.run(
+                    ["RNAplot", "--output-format=svg", f"--layout-type={layout}"],
+                    stdin=open(input_file, 'r'),
+                    cwd=tmpdir,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                
+                time.sleep(0.2)
+                
+                print("=== RNAplot FILE Method ===")
+                print("Return code:", result.returncode)
+                print("Files created:", os.listdir(tmpdir))
+                
+                svg_files = [f for f in os.listdir(tmpdir) if f.endswith('.svg')]
+                
+                if svg_files:
+                    svg_path = os.path.join(tmpdir, svg_files[0])
+                    with open(svg_path) as f:
+                        svg = f.read()
+                    
+                    if filename:
+                        with open(filename, "w") as out:
+                            out.write(svg)
+                    
+                    print("✓ SVG generated successfully via file")
+                    return svg
+                    
+            except Exception as e:
+                print(f"FILE method failed: {e}")
             
-            with open(svg_path) as f:
-                svg = f.read()
-
-            if filename:
-                with open(filename, "w") as out:
-                    out.write(svg)
-
-            return svg
+            # If both methods fail, show debug info
+            print("=== BOTH METHODS FAILED ===")
+            if 'result' in locals():
+                print("Last stderr:", result.stderr)
+                print("Last stdout:", result.stdout)
+            print("===========================")
+            
+            return self._generate_fallback_svg(sequence, structure)
     
     def _generate_svg_via_ps2svg(self, sequence: str, structure: str) -> str:
         """
